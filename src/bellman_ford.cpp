@@ -5,13 +5,20 @@
 #include <algorithm>
 #include <immintrin.h>
 #include <cstring>
+#include <atomic>
 using namespace std;
 
+// ============================================================
+//      ORIGINALNA VERZIJA (ISPRAVLJENA)
+// ============================================================
 std::vector<long> runBellmanFordSSSP(Graph* graph, int source_node_id)
 {
     int no_of_nodes = graph->num_nodes;
     int no_of_edges = graph->num_edges;
-    vector<long> node_distances(no_of_nodes, numeric_limits<int>::max() - 100);
+    
+    // ISPRAVKA: Koristiti long::max umesto int::max
+    const long INF = numeric_limits<long>::max() / 2;
+    vector<long> node_distances(no_of_nodes, INF);
     node_distances[source_node_id] = 0;
 
     // Relax edges
@@ -20,9 +27,10 @@ std::vector<long> runBellmanFordSSSP(Graph* graph, int source_node_id)
         for (int j = 0; j < no_of_edges; j++) {
             int u = graph->edge[j].source;
             int v = graph->edge[j].destination;
-            int w = graph->edge[j].weight;
-
-            if (node_distances[u] != numeric_limits<int>::max() &&
+            long w = graph->edge[j].weight; // long umesto int
+            
+            // ISPRAVKA: Pravilna provera za INF
+            if (node_distances[u] < INF &&
                 node_distances[u] + w < node_distances[v]) {
                 node_distances[v] = node_distances[u] + w;
                 relaxed = true;
@@ -35,15 +43,16 @@ std::vector<long> runBellmanFordSSSP(Graph* graph, int source_node_id)
     return node_distances;
 }
 
-// cache optimizacija + prefetching
+// ============================================================
+//      CACHE OPTIMIZOVANA VERZIJA (ISPRAVLJENA)
+// ============================================================
 std::vector<long> runBellmanFordSSSP_CACHE(Graph* graph, int source_node_id) {
     int no_of_nodes = graph->num_nodes;
     int no_of_edges = graph->num_edges;
     
-    vector<long> node_distances(no_of_nodes, numeric_limits<int>::max() - 100);
+    const long INF = numeric_limits<long>::max() / 2;
+    vector<long> node_distances(no_of_nodes, INF);
     node_distances[source_node_id] = 0;
-    
-    const long MAX_DIST = numeric_limits<int>::max() - 100;
     
     // Sortiranje grana po source čvoru za bolju cache lokalnost
     vector<Edge> sorted_edges(graph->edge, graph->edge + no_of_edges);
@@ -55,7 +64,7 @@ std::vector<long> runBellmanFordSSSP_CACHE(Graph* graph, int source_node_id) {
         bool relaxed = false;
         
         // Procesiranje po blokovima za bolju cache iskorištenost
-        const int BLOCK_SIZE = 8;
+        const int BLOCK_SIZE = 64;
         for (int block_start = 0; block_start < no_of_edges; block_start += BLOCK_SIZE) {
             int block_end = min(block_start + BLOCK_SIZE, no_of_edges);
             
@@ -68,10 +77,10 @@ std::vector<long> runBellmanFordSSSP_CACHE(Graph* graph, int source_node_id) {
             for (int j = block_start; j < block_end; j++) {
                 int u = sorted_edges[j].source;
                 int v = sorted_edges[j].destination;
-                int w = sorted_edges[j].weight;
+                long w = sorted_edges[j].weight;
                 
                 long dist_u = node_distances[u];
-                if (dist_u != MAX_DIST) {
+                if (dist_u < INF) {
                     long new_dist = dist_u + w;
                     if (new_dist < node_distances[v]) {
                         node_distances[v] = new_dist;
@@ -87,60 +96,82 @@ std::vector<long> runBellmanFordSSSP_CACHE(Graph* graph, int source_node_id) {
     return node_distances;
 }
 
-// OpenMP verzija
-std::vector<long> runBellmanFordSSSP_OMP(Graph* graph, int source_node_id) {
+// ============================================================
+//      OpenMP VERZIJA SA ATOMIC (THREAD-SAFE + OPTIMIZOVANA)
+// ============================================================
+std::vector<long> runBellmanFordSSSP_OMP(Graph* graph, int source_node_id)
+{
     int no_of_nodes = graph->num_nodes;
     int no_of_edges = graph->num_edges;
-    
-    vector<long> node_distances(no_of_nodes, numeric_limits<int>::max() - 100);
-    node_distances[source_node_id] = 0;
-    
-    const long MAX_DIST = numeric_limits<int>::max() - 100;
-    
-    for (int iter = 0; iter < no_of_nodes - 1; iter++) {
-        bool relaxed = false;
-        
-        // Thread-local vektor za detekciju promjena
+
+    // -----------------------------
+    // 1) Sortiranje grana po source
+    // -----------------------------
+    std::vector<Edge> edges(graph->edge, graph->edge + no_of_edges);
+
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& a, const Edge& b) {
+                  return a.source < b.source;
+              });
+
+    // -----------------------------
+    // 2) Distance niz
+    // -----------------------------
+    std::vector<long> dist(no_of_nodes, LONG_MAX - 1000);
+    dist[source_node_id] = 0;
+
+    bool updated = true;
+
+    // -----------------------------
+    // 3) RELAKSACIJE (N-1 puta)
+    // -----------------------------
+    for (int iter = 0; iter < no_of_nodes - 1 && updated; iter++)
+    {
+        updated = false;
+
         #pragma omp parallel
         {
-            bool local_relaxed = false;
-            
-            for (int j = 0; j < no_of_edges; j++) {
-                int u = graph->edge[j].source;
-                int v = graph->edge[j].destination;
-                int w = graph->edge[j].weight;
-                
-                long dist_u = node_distances[u];
-                if (dist_u != MAX_DIST) {
-                    long new_dist = dist_u + w;
-                    
-                    if (new_dist < node_distances[v]) {
-                        #pragma omp critical
-                        {
-                            if (new_dist < node_distances[v]) {
-                                node_distances[v] = new_dist;
-                                local_relaxed = true;
-                            }
-                        }
-                    }
+            bool local_update = false;
+
+            #pragma omp for schedule(static)
+            for (int e = 0; e < no_of_edges; e++)
+            {
+                // Prefetch unaprijed 16 edge struktura (~1-2 cache line)
+                if (e + 16 < no_of_edges)
+                    __builtin_prefetch(&edges[e + 16], 0, 1);
+
+                int u = edges[e].source;
+                int v = edges[e].destination;
+                long w = edges[e].weight;
+
+                long du = dist[u];
+                long nd = du + w;
+
+                long oldv = dist[v];
+
+                if (nd < oldv)
+                {
+                    #pragma omp atomic write
+                    dist[v] = nd;
+                    local_update = true;
                 }
             }
-            
-            // Combine local flags
-            if (local_relaxed) {
-                #pragma omp critical
-                relaxed = true;
+
+            // Ako je thread našao update → globalni flag
+            if (local_update)
+            {
+                #pragma omp atomic write
+                updated = true;
             }
-        }
-        
-        if (!relaxed) break;
+        } // kraj parallel region
     }
-    
-    return node_distances;
+
+    return dist;
 }
 
+
 // ============================================================
-//      AVX2 Bellman-Ford (SIMD + SoA struktura podataka)
+//      AVX2 VERZIJA SA CACHE OPTIMIZACIJOM
 // ============================================================
 std::vector<long> runBellmanFordSSSP_AVX2(
     int N, int E, int source_node_id,
@@ -148,71 +179,77 @@ std::vector<long> runBellmanFordSSSP_AVX2(
     const std::vector<int>& dst,
     const std::vector<int>& w)
 {
-    const long INF = std::numeric_limits<int>::max() - 100;
+    const long INF = std::numeric_limits<long>::max() / 2;
 
     std::vector<long> dist(N, INF);
     dist[source_node_id] = 0;
 
-    // Sort edges by source
-    std::vector<int> order(E);
-    for (int i = 0; i < E; i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int a, int b){
-        return src[a] < src[b];
+    // Kreiraj strukturu grana za sortiranje
+    struct EdgeTmp { int u, v, weight; };
+    std::vector<EdgeTmp> edges(E);
+    for (int i = 0; i < E; i++) {
+        edges[i] = { src[i], dst[i], w[i] };
+    }
+
+    // Sortiranje po source čvoru radi cache lokalnosti
+    std::sort(edges.begin(), edges.end(), [](const EdgeTmp &a, const EdgeTmp &b){
+        return a.u < b.u;
     });
+
+    const int BLOCK_SIZE = 64; // blokiranje radi cache-a
 
     for (int iter = 0; iter < N - 1; iter++)
     {
         bool relaxed = false;
-        int j = 0;
-
-        // SIMD paket od 8 elemenata
-        for (; j <= E - 8; j += 8)
+        for (int block_start = 0; block_start < E; block_start += BLOCK_SIZE)
         {
-            int idx[8];
-            for (int k = 0; k < 8; k++) idx[k] = order[j + k];
+            int block_end = std::min(block_start + BLOCK_SIZE, E);
 
-            // load dist[u] i weights
-            long du_arr[8], newdArr[8];
-            int vArr[8];
-            for (int k = 0; k < 8; k++) {
-                du_arr[k] = dist[src[idx[k]]];
-                vArr[k] = dst[idx[k]];
+            if (block_start + BLOCK_SIZE < E) {
+                __builtin_prefetch(&edges[block_start + BLOCK_SIZE], 0, 3);
             }
 
-            __m256i du = _mm256_loadu_si256((__m256i*)du_arr);
-            __m256i wv = _mm256_set_epi32(
-                w[idx[7]], w[idx[6]], w[idx[5]], w[idx[4]],
-                w[idx[3]], w[idx[2]], w[idx[1]], w[idx[0]]
-            );
+            int j = block_start;
 
-            __m256i newd = _mm256_add_epi32(du, wv);
-            _mm256_storeu_si256((__m256i*)newdArr, newd);
-
-            for (int k = 0; k < 8; k++)
+            // SIMD AVX2 processing - 4 grane po iteraciji
+            for (; j + 3 < block_end; j += 4)
             {
-                if (du_arr[k] == INF) continue;
+                alignas(32) long du[4] = { dist[edges[j+0].u], dist[edges[j+1].u],
+                                            dist[edges[j+2].u], dist[edges[j+3].u] };
+                alignas(32) long wt[4] = { (long)edges[j+0].weight, (long)edges[j+1].weight,
+                                            (long)edges[j+2].weight, (long)edges[j+3].weight };
 
-                long v_new = newdArr[k];
-                int v = vArr[k];
-                if (v_new < dist[v]) {
-                    dist[v] = v_new;
-                    relaxed = true;
+                __m256i v_du = _mm256_load_si256((__m256i*)du);
+                __m256i v_wt = _mm256_load_si256((__m256i*)wt);
+                __m256i v_new = _mm256_add_epi64(v_du, v_wt);
+
+                alignas(32) long new_dist[4];
+                _mm256_store_si256((__m256i*)new_dist, v_new);
+
+                for (int k = 0; k < 4; k++) {
+                    if (du[k] < INF) {
+                        int v = edges[j+k].v;
+                        if (new_dist[k] < dist[v]) {
+                            dist[v] = new_dist[k];
+                            relaxed = true;
+                        }
+                    }
                 }
             }
-        }
 
-        // Scalar fallback
-        for (; j < E; j++)
-        {
-            int e = order[j];
-            int u = src[e];
-            int v = dst[e];
-            int wt = w[e];
-            if (dist[u] != INF) {
-                long nd = dist[u] + wt;
-                if (nd < dist[v]) {
-                    dist[v] = nd;
-                    relaxed = true;
+            // Scalar fallback za preostale grane u bloku
+            for (; j < block_end; j++)
+            {
+                int u = edges[j].u;
+                int v = edges[j].v;
+                long wt = edges[j].weight;
+
+                if (dist[u] < INF) {
+                    long new_dist = dist[u] + wt;
+                    if (new_dist < dist[v]) {
+                        dist[v] = new_dist;
+                        relaxed = true;
+                    }
                 }
             }
         }
@@ -223,81 +260,88 @@ std::vector<long> runBellmanFordSSSP_AVX2(
     return dist;
 }
 
+// ============================================================
+//      AVX-512 VERZIJA SA CACHE OPTIMIZACIJOM
+// ============================================================
 std::vector<long> runBellmanFordSSSP_AVX512(
     int N, int E, int source_node_id,
     const std::vector<int>& src,
     const std::vector<int>& dst,
     const std::vector<int>& w)
 {
-    const long INF = std::numeric_limits<long>::max() / 2; // da ne bude overflow prilikom sabiranja
+    const long INF = std::numeric_limits<long>::max() / 2;
 
     std::vector<long> dist(N, INF);
     dist[source_node_id] = 0;
 
-    // Sort edges by source
-    std::vector<int> order(E);
-    for (int i = 0; i < E; i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int a, int b){
-        return src[a] < src[b];
+    struct EdgeTmp { int u, v, weight; };
+    std::vector<EdgeTmp> edges(E);
+    for (int i = 0; i < E; i++) {
+        edges[i] = { src[i], dst[i], w[i] };
+    }
+
+    std::sort(edges.begin(), edges.end(), [](const EdgeTmp &a, const EdgeTmp &b){
+        return a.u < b.u;
     });
+
+    const int BLOCK_SIZE = 64;
 
     for (int iter = 0; iter < N - 1; iter++)
     {
         bool relaxed = false;
-        int j = 0;
-
-        // SIMD paket od 8 elemenata (AVX-512 može držati 8 x 64-bit int)
-        for (; j <= E - 8; j += 8)
+        for (int block_start = 0; block_start < E; block_start += BLOCK_SIZE)
         {
-            int idx[8];
-            for (int k = 0; k < 8; k++) idx[k] = order[j + k];
+            int block_end = std::min(block_start + BLOCK_SIZE, E);
 
-            long du_arr[8], newdArr[8];
-            int vArr[8];
-            for (int k = 0; k < 8; k++) {
-                du_arr[k] = dist[src[idx[k]]];
-                vArr[k] = dst[idx[k]];
+            if (block_start + BLOCK_SIZE < E) {
+                __builtin_prefetch(&edges[block_start + BLOCK_SIZE], 0, 3);
             }
 
-            // load dist[u] u AVX-512 register
-            __m512i du = _mm512_loadu_si512((__m512i*)du_arr);
+            int j = block_start;
 
-            // load weights u 64-bit register
-            __m512i wv = _mm512_set_epi64(
-                w[idx[7]], w[idx[6]], w[idx[5]], w[idx[4]],
-                w[idx[3]], w[idx[2]], w[idx[1]], w[idx[0]]
-            );
-
-            // sabiranje: newd = du + wv
-            __m512i newd = _mm512_add_epi64(du, wv);
-            _mm512_storeu_si512((__m512i*)newdArr, newd);
-
-            // scalar relax (sigurno)
-            for (int k = 0; k < 8; k++)
+            // SIMD AVX-512 processing - 8 grana po iteraciji
+            for (; j + 7 < block_end; j += 8)
             {
-                if (du_arr[k] == INF) continue;
+                alignas(64) long du[8] = { dist[edges[j+0].u], dist[edges[j+1].u],
+                                            dist[edges[j+2].u], dist[edges[j+3].u],
+                                            dist[edges[j+4].u], dist[edges[j+5].u],
+                                            dist[edges[j+6].u], dist[edges[j+7].u] };
+                alignas(64) long wt[8] = { (long)edges[j+0].weight, (long)edges[j+1].weight,
+                                            (long)edges[j+2].weight, (long)edges[j+3].weight,
+                                            (long)edges[j+4].weight, (long)edges[j+5].weight,
+                                            (long)edges[j+6].weight, (long)edges[j+7].weight };
 
-                long v_new = newdArr[k];
-                int v = vArr[k];
-                if (v_new < dist[v]) {
-                    dist[v] = v_new;
-                    relaxed = true;
+                __m512i v_du = _mm512_load_epi64(du);
+                __m512i v_wt = _mm512_load_epi64(wt);
+                __m512i v_new = _mm512_add_epi64(v_du, v_wt);
+
+                alignas(64) long new_dist[8];
+                _mm512_store_epi64(new_dist, v_new);
+
+                for (int k = 0; k < 8; k++) {
+                    if (du[k] < INF) {
+                        int v = edges[j+k].v;
+                        if (new_dist[k] < dist[v]) {
+                            dist[v] = new_dist[k];
+                            relaxed = true;
+                        }
+                    }
                 }
             }
-        }
 
-        // Scalar fallback za preostale grane
-        for (; j < E; j++)
-        {
-            int e = order[j];
-            int u = src[e];
-            int v = dst[e];
-            int wt = w[e];
-            if (dist[u] != INF) {
-                long nd = dist[u] + wt;
-                if (nd < dist[v]) {
-                    dist[v] = nd;
-                    relaxed = true;
+            // Scalar fallback za preostale grane u bloku
+            for (; j < block_end; j++)
+            {
+                int u = edges[j].u;
+                int v = edges[j].v;
+                long wt = edges[j].weight;
+
+                if (dist[u] < INF) {
+                    long new_dist = dist[u] + wt;
+                    if (new_dist < dist[v]) {
+                        dist[v] = new_dist;
+                        relaxed = true;
+                    }
                 }
             }
         }

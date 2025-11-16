@@ -25,7 +25,7 @@ int main() {
     // Kreiranje grafa
     if (!fs::exists(txtFile)) {
         cout << "[INFO] Fajl ne postoji, generisem graf..." << endl;
-        bool ok = createGraph(txtFile, 5000, 300000, -150, 250);
+        bool ok = createGraph(txtFile, 50000, 3000000, -15, 25);
         if (!ok) {
             cerr << "[ERROR] Neuspjesno generisanje grafa!" << endl;
             return 1;
