@@ -1,6 +1,7 @@
 #include "graph_utils.h"
 #include "bellman_ford.h"
 #include <iostream>
+#include <fstream>
 #include <filesystem>
 #include <cstdlib>
 #include <chrono>
@@ -11,6 +12,29 @@
 
 using namespace std;
 namespace fs = std::filesystem;
+
+// Funkcija za direktno čitanje grafa u SoA format
+bool readGraphSoA(const string& filename, int& num_nodes, int& num_edges, 
+                  vector<int>& src, vector<int>& dst, vector<int>& w) {
+    ifstream file(filename);
+    if (!file.is_open()) {
+        cerr << "[ERROR] Ne mogu otvoriti fajl: " << filename << endl;
+        return false;
+    }
+    
+    file >> num_nodes >> num_edges;
+    
+    src.resize(num_edges);
+    dst.resize(num_edges);
+    w.resize(num_edges);
+    
+    for (int i = 0; i < num_edges; i++) {
+        file >> src[i] >> dst[i] >> w[i];
+    }
+    
+    file.close();
+    return true;
+}
 
 int main() {
     string folder = "graph";
@@ -25,7 +49,7 @@ int main() {
     // Kreiranje grafa
     if (!fs::exists(txtFile)) {
         cout << "[INFO] Fajl ne postoji, generisem graf..." << endl;
-        bool ok = createGraph(txtFile, 50000, 3000000, -15, 25);
+        bool ok = createGraph(txtFile, 200000, 8000000, -15, 35);
         if (!ok) {
             cerr << "[ERROR] Neuspjesno generisanje grafa!" << endl;
             return 1;
@@ -34,7 +58,7 @@ int main() {
         cout << "[INFO] Graf vec postoji → preskacem generisanje." << endl;
     }
     
-    // Učitavanje grafa
+    // Učitavanje grafa za originalne verzije
     Graph* g = readGraph(txtFile);
     if (!g) {
         cerr << "[ERROR] Ne mogu ucitati graf!" << endl;
@@ -46,16 +70,6 @@ int main() {
     cout << string(60, '=') << endl;
     
     int last_node = g->num_nodes - 1;
-
-    // ==================== Konverzija AoS → SoA ====================
-    vector<int> src(g->num_edges);
-    vector<int> dst(g->num_edges);
-    vector<int> w(g->num_edges);
-    for (int i = 0; i < g->num_edges; i++) {
-        src[i] = g->edge[i].source;
-        dst[i] = g->edge[i].destination;
-        w[i]   = g->edge[i].weight;
-    }
 
     // ========== TEST 1: ORIGINALNA VERZIJA ==========
     cout << "\n[TEST 1] ORIGINALNA VERZIJA (standardna implementacija)\n";
@@ -112,12 +126,15 @@ int main() {
          << (speedup3 > 1.0 ? "(BRZE)" : "(SPORIJE)") << endl;
     cout << "[KOREKTNOST] " << (distances1 == distances3 ? "✓ TACNO" : "✗ NETACNO") << endl;
 
+    // ==================== Direktno čitanje za AVX verzije ====================
+ 
+
     // ========== TEST 4: AVX2 SIMD VERZIJA ==========
     cout << "\n[TEST 4] AVX2 SIMD VERZIJA (SoA + SIMD relaksacija)\n";
     cout << string(60, '-') << endl;
 
     auto start4 = chrono::high_resolution_clock::now();
-    vector<long> distances4 = runBellmanFordSSSP_AVX2(g->num_nodes, g->num_edges, 0, src, dst, w);
+    vector<long> distances4 = runBellmanFordSSSP_AVX2(g, 0);
     auto end4 = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed4 = end4 - start4;
     
@@ -137,7 +154,7 @@ int main() {
     cout << string(60, '-') << endl;
 
     auto start5 = chrono::high_resolution_clock::now();
-    vector<long> distances5 = runBellmanFordSSSP_AVX512(g->num_nodes, g->num_edges, 0, src, dst, w);
+    vector<long> distances5 = runBellmanFordSSSP_AVX512(g, 0);
     auto end5 = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed5 = end5 - start5;
     
