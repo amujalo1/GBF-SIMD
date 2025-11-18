@@ -5,6 +5,7 @@
 #include <vector>
 #include <random>
 #include <set>
+#include <algorithm>
 
 using namespace std;
 
@@ -130,32 +131,58 @@ Graph* readGraph(const string& filename)
     return g;
 }
 
-// Implementacija funkcije za čitanje grafa u SoA format
 GraphSoA* readGraphSoA(const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
-        std::cerr << "[ERROR] Ne mogu otvoriti fajl: " << filename << std::endl;
+        std::cerr << "Greska: Ne mogu otvoriti fajl " << filename << std::endl;
         return nullptr;
     }
-    
-    GraphSoA* graph = new GraphSoA();
-    
-    file >> graph->num_nodes >> graph->num_edges;
-    
-    // Rezervacija memorije
-    graph->sources.reserve(graph->num_edges);
-    graph->destinations.reserve(graph->num_edges);
-    graph->weights.reserve(graph->num_edges);
-    
-    // Čitanje grana direktno u vektore
-    int src, dst, weight;
-    for (int i = 0; i < graph->num_edges; i++) {
-        file >> src >> dst >> weight;
-        graph->sources.push_back(src);
-        graph->destinations.push_back(dst);
-        graph->weights.push_back(weight);
+
+    auto* gSoA = new GraphSoA();
+    int N, E;
+    if (!(file >> N >> E)) {
+        delete gSoA;
+        return nullptr;
     }
+    gSoA->num_nodes = N;
+    gSoA->num_edges = E;
+
+    // Privremeno skladištenje i indeksiranje originalnih podataka
+    std::vector<int> src_temp(E);
+    std::vector<int> dst_temp(E);
+    std::vector<int> w_temp(E);
+    std::vector<std::pair<int, int>> indexed_edges(E);
     
-    file.close();
-    return graph;
+    for (int i = 0; i < E; ++i) {
+        int u, v, weight;
+        if (!(file >> u >> v >> weight)) {
+            // Greška pri čitanju
+            delete gSoA;
+            return nullptr;
+        }
+        src_temp[i] = u;
+        dst_temp[i] = v;
+        w_temp[i] = weight;
+        
+        // Pamtimo originalni indeks i izvorišni čvor za sortiranje
+        indexed_edges[i] = {i, u}; 
+    }
+
+    // Sortiranje indeksa po izvorišnom čvoru
+    std::sort(indexed_edges.begin(), indexed_edges.end(),
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+
+    // Kreiranje SORTIRANOG SoA grafa
+    gSoA->sources.reserve(E);
+    gSoA->destinations.reserve(E);
+    gSoA->weights.reserve(E);
+    
+    for (int i = 0; i < E; ++i) {
+        int original_idx = indexed_edges[i].first;
+        gSoA->sources.push_back(src_temp[original_idx]);
+        gSoA->destinations.push_back(dst_temp[original_idx]);
+        gSoA->weights.push_back(w_temp[original_idx]);
+    }
+
+    return gSoA;
 }

@@ -353,10 +353,11 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
 }
 
 // ============================================================
-//      AVX2 VERZIJA - DIREKTNA SoA (BEZ INDEKSIRANJA!)
+//     AVX2 VERZIJA - DIREKTNA SoA (VEĆ SORTIRAN U UČITAVANJU)
 // ============================================================
 std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_node_id)
 {
+    // Inicijalizacija
     int N = graph->num_nodes;
     int E = graph->num_edges;
 
@@ -364,43 +365,16 @@ std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_
     std::vector<long> dist(N, INF);
     dist[source_node_id] = 0;
 
-    // Direktno reference na vektore - BEZ kopiranja
+    // Referenciranje na VEĆ SORTIRANE podatke iz GraphSoA strukture
     const std::vector<int>& src = graph->sources;
     const std::vector<int>& dst = graph->destinations;
     const std::vector<int>& w = graph->weights;
 
-    // Kreiramo SoA strukturu SORTIRANU po source čvoru
-    struct EdgeSoA {
-        std::vector<int> sources;
-        std::vector<int> destinations;
-        std::vector<int> weights;
-    };
-    
-    EdgeSoA sorted;
-    sorted.sources.reserve(E);
-    sorted.destinations.reserve(E);
-    sorted.weights.reserve(E);
-    
-    // Kreiramo vektor (index, source) za sortiranje
-    std::vector<std::pair<int, int>> idx_src(E);
-    for (int i = 0; i < E; i++) {
-        idx_src[i] = {i, src[i]};
-    }
-    
-    // Sortiramo po source
-    std::sort(idx_src.begin(), idx_src.end(), 
-              [](const auto& a, const auto& b) { return a.second < b.second; });
-    
-    // Popuni sortirane vektore DIREKTNO (bez indirektnog pristupa)
-    for (int i = 0; i < E; i++) {
-        int idx = idx_src[i].first;
-        sorted.sources.push_back(src[idx]);
-        sorted.destinations.push_back(dst[idx]);
-        sorted.weights.push_back(w[idx]);
-    }
+    // Nema više EdgeSoA strukture, sortiranja i kopiranja!
 
-    const int BLOCK_SIZE = 64;
+    const int BLOCK_SIZE = 64; // Za prefetch
 
+    // Glavna petlja Bellman-Forda
     for (int iter = 0; iter < N - 1; iter++)
     {
         bool relaxed = false;
@@ -409,33 +383,29 @@ std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_
         {
             int block_end = std::min(block_start + BLOCK_SIZE, E);
 
-            // Prefetch sljedećeg bloka
+            // Prefetching sljedećeg bloka (Sada radi na samoj graph strukturi)
             if (block_start + BLOCK_SIZE < E) {
-                __builtin_prefetch(&sorted.sources[block_start + BLOCK_SIZE], 0, 3);
-                __builtin_prefetch(&sorted.destinations[block_start + BLOCK_SIZE], 0, 3);
-                __builtin_prefetch(&sorted.weights[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&src[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&dst[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&w[block_start + BLOCK_SIZE], 0, 3);
             }
 
             int j = block_start;
 
-            // --- SIMD: 4 grane odjednom ---
+            // --- SIMD: 4 grane odjednom (64-bit Long) ---
             for (; j + 3 < block_end; j += 4)
             {
-                // DIREKTAN pristup - BEZ indirektnog indeksiranja!
-                alignas(32) long du[4] = { 
-                    dist[sorted.sources[j+0]], 
-                    dist[sorted.sources[j+1]],
-                    dist[sorted.sources[j+2]], 
-                    dist[sorted.sources[j+3]]
-                };
+                // Pripremamo ulazne podatke za AVX2 (4 x long = 256 bita)
+                alignas(32) long du[4];
+                alignas(32) long wt[4];
 
-                alignas(32) long wt[4] = { 
-                    (long)sorted.weights[j+0], 
-                    (long)sorted.weights[j+1],
-                    (long)sorted.weights[j+2], 
-                    (long)sorted.weights[j+3]
-                };
+                for (int k = 0; k < 4; k++) {
+                    // DIREKTAN PRISTUP SORTIRANIM VEKTORIMA
+                    du[k] = dist[src[j+k]];
+                    wt[k] = w[j+k];
+                }
 
+                // AVX2 relaksacija (64-bitno sabiranje)
                 __m256i v_du = _mm256_load_si256((__m256i*)du);
                 __m256i v_wt = _mm256_load_si256((__m256i*)wt);
                 __m256i v_new = _mm256_add_epi64(v_du, v_wt);
@@ -443,12 +413,12 @@ std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_
                 alignas(32) long new_dist[4];
                 _mm256_store_si256((__m256i*)new_dist, v_new);
 
-                // Update
+                // Skalarna provjera i ažuriranje
                 for (int k = 0; k < 4; k++)
                 {
                     if (du[k] < INF)
                     {
-                        int v = sorted.destinations[j+k];
+                        int v = dst[j+k];
                         if (new_dist[k] < dist[v])
                         {
                             dist[v] = new_dist[k];
@@ -461,9 +431,9 @@ std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_
             // --- Scalar ostatak ---
             for (; j < block_end; j++)
             {
-                int u = sorted.sources[j];
-                int v = sorted.destinations[j];
-                long wt = sorted.weights[j];
+                int u = src[j];
+                int v = dst[j];
+                long wt = w[j];
 
                 if (dist[u] < INF) {
                     long new_dist = dist[u] + wt;
@@ -482,47 +452,24 @@ std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_
 }
 
 // ============================================================
-//      AVX-512 VERZIJA - DIREKTNA SoA (BEZ INDEKSIRANJA!)
+//     AVX-512 VERZIJA - DIREKTNA SoA (VEĆ SORTIRAN U UČITAVANJU)
 // ============================================================
 std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int source_node_id)
 {
     int N = graph->num_nodes;
     int E = graph->num_edges;
 
+    // Distances
     const long INF = std::numeric_limits<long>::max() / 2;
     std::vector<long> dist(N, INF);
     dist[source_node_id] = 0;
 
+    // Referenciranje na VEĆ SORTIRANE podatke
     const std::vector<int>& src = graph->sources;
     const std::vector<int>& dst = graph->destinations;
     const std::vector<int>& w = graph->weights;
-
-    // Kreiramo sortirane vektore
-    struct EdgeSoA {
-        std::vector<int> sources;
-        std::vector<int> destinations;
-        std::vector<int> weights;
-    };
     
-    EdgeSoA sorted;
-    sorted.sources.reserve(E);
-    sorted.destinations.reserve(E);
-    sorted.weights.reserve(E);
-    
-    std::vector<std::pair<int, int>> idx_src(E);
-    for (int i = 0; i < E; i++) {
-        idx_src[i] = {i, src[i]};
-    }
-    
-    std::sort(idx_src.begin(), idx_src.end(), 
-              [](const auto& a, const auto& b) { return a.second < b.second; });
-    
-    for (int i = 0; i < E; i++) {
-        int idx = idx_src[i].first;
-        sorted.sources.push_back(src[idx]);
-        sorted.destinations.push_back(dst[idx]);
-        sorted.weights.push_back(w[idx]);
-    }
+    // Nema više EdgeSoA strukture i sortiranja/kopiranja!
 
     const int BLOCK_SIZE = 64;
 
@@ -534,25 +481,29 @@ std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int sourc
         {
             int block_end = std::min(block_start + BLOCK_SIZE, E);
 
+            // Prefetching sljedećeg bloka
             if (block_start + BLOCK_SIZE < E) {
-                __builtin_prefetch(&sorted.sources[block_start + BLOCK_SIZE], 0, 3);
-                __builtin_prefetch(&sorted.destinations[block_start + BLOCK_SIZE], 0, 3);
-                __builtin_prefetch(&sorted.weights[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&src[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&dst[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&w[block_start + BLOCK_SIZE], 0, 3);
             }
 
             int j = block_start;
 
-            // --- SIMD: 8 grana odjednom ---
+            // --- SIMD: 8 grana odjednom (64-bit) ---
             for (; j + 7 < block_end; j += 8)
             {
+                // Pripremamo ulazne podatke za AVX-512
                 alignas(64) long du[8];
                 alignas(64) long wt[8];
 
                 for (int k = 0; k < 8; k++) {
-                    du[k] = dist[sorted.sources[j+k]];
-                    wt[k] = sorted.weights[j+k];
+                    // DIREKTAN PRISTUP SORTIRANIM VEKTORIMA
+                    du[k] = dist[src[j+k]];
+                    wt[k] = w[j+k];
                 }
 
+                // AVX relaksacija
                 __m512i v_du = _mm512_load_epi64(du);
                 __m512i v_wt = _mm512_load_epi64(wt);
                 __m512i v_new = _mm512_add_epi64(v_du, v_wt);
@@ -560,11 +511,12 @@ std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int sourc
                 alignas(64) long new_dist[8];
                 _mm512_store_epi64(new_dist, v_new);
 
+                // Skalarna provjera i ažuriranje (zbog zavisnosti i relaxed zastavice)
                 for (int k = 0; k < 8; k++)
                 {
                     if (du[k] < INF)
                     {
-                        int v = sorted.destinations[j+k];
+                        int v = dst[j+k]; // DIREKTAN PRISTUP
                         if (new_dist[k] < dist[v])
                         {
                             dist[v] = new_dist[k];
@@ -577,9 +529,9 @@ std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int sourc
             // --- Scalar ostatak ---
             for (; j < block_end; j++)
             {
-                int u = sorted.sources[j];
-                int v = sorted.destinations[j];
-                long wt = sorted.weights[j];
+                int u = src[j];
+                int v = dst[j];
+                long wt = w[j];
 
                 if (dist[u] < INF) {
                     long new_dist = dist[u] + wt;
