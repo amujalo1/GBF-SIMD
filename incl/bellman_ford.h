@@ -8,14 +8,11 @@
 std::vector<long> runBellmanFordSSSP(Graph* graph, int source_node_id);
 std::vector<long> runBellmanFordSSSP_CACHE(Graph* graph, int source_node_id);
 std::vector<long> runBellmanFordSSSP_OMP(Graph* graph, int source_node_id);
-std::vector<long> runBellmanFordSSSP_AVX2(
-    int N, int E, int source_node_id,
-    const std::vector<int>& src,
-    const std::vector<int>& dst,
-    const std::vector<int>& w);
-std::vector<long> runBellmanFordSSSP_AVX512(
-    int N, int E, int source_node_id,
-    const std::vector<int>& src,
-    const std::vector<int>& dst,
-    const std::vector<int>& w);
+std::vector<long> runBellmanFordSSSP_AVX2(Graph* graph, int source_node_id);
+std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id);
+
+// Nove SoA verzije koje direktno koriste GraphSoA strukturu
+std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_node_id);
+std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int source_node_id);
+
 #endif

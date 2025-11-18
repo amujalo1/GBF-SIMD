@@ -130,3 +130,32 @@ Graph* readGraph(const string& filename)
     return g;
 }
 
+// Implementacija funkcije za čitanje grafa u SoA format
+GraphSoA* readGraphSoA(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "[ERROR] Ne mogu otvoriti fajl: " << filename << std::endl;
+        return nullptr;
+    }
+    
+    GraphSoA* graph = new GraphSoA();
+    
+    file >> graph->num_nodes >> graph->num_edges;
+    
+    // Rezervacija memorije
+    graph->sources.reserve(graph->num_edges);
+    graph->destinations.reserve(graph->num_edges);
+    graph->weights.reserve(graph->num_edges);
+    
+    // Čitanje grana direktno u vektore
+    int src, dst, weight;
+    for (int i = 0; i < graph->num_edges; i++) {
+        file >> src >> dst >> weight;
+        graph->sources.push_back(src);
+        graph->destinations.push_back(dst);
+        graph->weights.push_back(weight);
+    }
+    
+    file.close();
+    return graph;
+}

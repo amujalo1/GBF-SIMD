@@ -176,39 +176,32 @@ std::vector<long> runBellmanFordSSSP_OMP(Graph* graph, int source_node_id)
 // ============================================================
 std::vector<long> runBellmanFordSSSP_AVX2(Graph* graph, int source_node_id)
 {
-    int N = graph->num_nodes;
-    int E = graph->num_edges;
+    int no_of_nodes = graph->num_nodes;
+    int no_of_edges = graph->num_edges;
 
     const long INF = std::numeric_limits<long>::max() / 2;
-    std::vector<long> dist(N, INF);
+    std::vector<long> dist(no_of_nodes, INF);
     dist[source_node_id] = 0;
 
     // Pravimo privremeni vektor grana radi sortiranja
-    struct EdgeTmp { int u, v, weight; };
-    std::vector<EdgeTmp> edges(E);
-
-    for (int i = 0; i < E; i++) {
-        edges[i].u = graph->edge[i].source;
-        edges[i].v = graph->edge[i].destination;
-        edges[i].weight = graph->edge[i].weight;
-    }
-
-    // Sortiranje po source čvoru radi cache lokalnosti
-    std::sort(edges.begin(), edges.end(), [](const EdgeTmp& a, const EdgeTmp& b){
-        return a.u < b.u;
-    });
+    std::vector<Edge> edges(graph->edge, graph->edge + no_of_edges);
+    // sort 
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& a, const Edge& b) {
+                  return a.source < b.source;
+              });
 
     const int BLOCK_SIZE = 64;
 
-    for (int iter = 0; iter < N - 1; iter++)
+    for (int iter = 0; iter < no_of_nodes - 1; iter++)
     {
         bool relaxed = false;
 
-        for (int block_start = 0; block_start < E; block_start += BLOCK_SIZE)
+        for (int block_start = 0; block_start < no_of_edges; block_start += BLOCK_SIZE)
         {
-            int block_end = std::min(block_start + BLOCK_SIZE, E);
+            int block_end = std::min(block_start + BLOCK_SIZE, no_of_edges);
 
-            if (block_start + BLOCK_SIZE < E)
+            if (block_start + BLOCK_SIZE < no_of_edges)
                 __builtin_prefetch(&edges[block_start + BLOCK_SIZE], 0, 3);
 
             int j = block_start;
@@ -216,8 +209,8 @@ std::vector<long> runBellmanFordSSSP_AVX2(Graph* graph, int source_node_id)
             // --- SIMD: 4 grane odjednom ---
             for (; j + 3 < block_end; j += 4)
             {
-                alignas(32) long du[4] = { dist[edges[j+0].u], dist[edges[j+1].u],
-                                            dist[edges[j+2].u], dist[edges[j+3].u] };
+                alignas(32) long du[4] = { dist[edges[j+0].source], dist[edges[j+1].source],
+                                            dist[edges[j+2].source], dist[edges[j+3].source] };
 
                 alignas(32) long wt[4] = { (long)edges[j+0].weight, (long)edges[j+1].weight,
                                             (long)edges[j+2].weight, (long)edges[j+3].weight };
@@ -235,7 +228,7 @@ std::vector<long> runBellmanFordSSSP_AVX2(Graph* graph, int source_node_id)
                 {
                     if (du[k] < INF)
                     {
-                        int v = edges[j+k].v;
+                        int v = edges[j+k].destination;
                         if (new_dist[k] < dist[v])
                         {
                             dist[v] = new_dist[k];
@@ -248,8 +241,8 @@ std::vector<long> runBellmanFordSSSP_AVX2(Graph* graph, int source_node_id)
             // --- Scalar ostatak ---
             for (; j < block_end; j++)
             {
-                int u = edges[j].u;
-                int v = edges[j].v;
+                int u = edges[j].source;
+                int v = edges[j].destination;
                 long wt = edges[j].weight;
 
                 if (dist[u] < INF) {
@@ -281,18 +274,13 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
     std::vector<long> dist(N, INF);
     dist[source_node_id] = 0;
 
-    struct EdgeTmp { int u, v, weight; };
-    std::vector<EdgeTmp> edges(E);
-
-    for (int i = 0; i < E; i++) {
-        edges[i].u = graph->edge[i].source;
-        edges[i].v = graph->edge[i].destination;
-        edges[i].weight = graph->edge[i].weight;
-    }
-
-    std::sort(edges.begin(), edges.end(), [](const EdgeTmp& a, const EdgeTmp& b){
-        return a.u < b.u;
-    });
+    // Pravimo privremeni vektor grana radi sortiranja
+    std::vector<Edge> edges(graph->edge, graph->edge + E);
+    // sort 
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& a, const Edge& b) {
+                  return a.source < b.source;
+              });
 
     const int BLOCK_SIZE = 64;
 
@@ -316,7 +304,7 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
                 alignas(64) long wt[8];
 
                 for (int k = 0; k < 8; k++) {
-                    du[k] = dist[edges[j+k].u];
+                    du[k] = dist[edges[j+k].source];
                     wt[k] = edges[j+k].weight;
                 }
 
@@ -331,7 +319,7 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
                 {
                     if (du[k] < INF)
                     {
-                        int v = edges[j+k].v;
+                        int v = edges[j+k].destination;
                         if (new_dist[k] < dist[v])
                         {
                             dist[v] = new_dist[k];
@@ -344,8 +332,8 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
             // --- Scalar ostatak ---
             for (; j < block_end; j++)
             {
-                int u = edges[j].u;
-                int v = edges[j].v;
+                int u = edges[j].source;
+                int v = edges[j].destination;
                 long wt = edges[j].weight;
 
                 if (dist[u] < INF) {
@@ -365,267 +353,246 @@ std::vector<long> runBellmanFordSSSP_AVX512(Graph* graph, int source_node_id)
 }
 
 // ============================================================
-//      AVX2 VERZIJA - SA ZAŠTITOM OD RACE CONDITION-A
+//      AVX2 VERZIJA - DIREKTNA SoA (BEZ INDEKSIRANJA!)
 // ============================================================
-// std::vector<long> runBellmanFordSSSP_AVX2(
-//     int N, int E, int source_node_id,
-//     const std::vector<int>& src,
-//     const std::vector<int>& dst,
-//     const std::vector<int>& w)
-// {
-//     const long INF = std::numeric_limits<long>::max() / 2;
-//     std::vector<long> dist(N, INF);
-//     dist[source_node_id] = 0;
+std::vector<long> runBellmanFordSSSP_AVX2_SoA(const GraphSoA* graph, int source_node_id)
+{
+    int N = graph->num_nodes;
+    int E = graph->num_edges;
 
-//     for (int iter = 0; iter < N - 1; iter++)
-//     {
-//         bool relaxed = false;
-//         int e = 0;
+    const long INF = std::numeric_limits<long>::max() / 2;
+    std::vector<long> dist(N, INF);
+    dist[source_node_id] = 0;
 
-//         AVX2: procesira 4 grane odjednom
-//         for (; e + 3 < E; e += 4)
-//         {
-//             PROVJERA: Da li postoje konflikti u batch-u?
-//             (dvije grane pišu u isti destination node)
-//             bool conflict = (dst[e+0] == dst[e+1]) || (dst[e+0] == dst[e+2]) || (dst[e+0] == dst[e+3]) ||
-//                            (dst[e+1] == dst[e+2]) || (dst[e+1] == dst[e+3]) ||
-//                            (dst[e+2] == dst[e+3]);
-            
-//             if (conflict) {
-//                 SCALAR PATH: procesiranje po jedna
-//                 for (int k = 0; k < 4; k++) {
-//                     if (dist[src[e+k]] < INF) {
-//                         long new_dist = dist[src[e+k]] + w[e+k];
-//                         if (new_dist < dist[dst[e+k]]) {
-//                             dist[dst[e+k]] = new_dist;
-//                             relaxed = true;
-//                         }
-//                     }
-//                 }
-//                 continue;
-//             }
+    // Direktno reference na vektore - BEZ kopiranja
+    const std::vector<int>& src = graph->sources;
+    const std::vector<int>& dst = graph->destinations;
+    const std::vector<int>& w = graph->weights;
 
-//             NEMA KONFLIKTA - Sigurno za AVX2
-//             alignas(32) long du[4] = { 
-//                 dist[src[e+0]], dist[src[e+1]],
-//                 dist[src[e+2]], dist[src[e+3]]
-//             };
-            
-//             alignas(32) long wt[4] = { 
-//                 (long)w[e+0], (long)w[e+1],
-//                 (long)w[e+2], (long)w[e+3]
-//             };
-
-//             __m256i v_du = _mm256_load_si256((__m256i*)du);
-//             __m256i v_wt = _mm256_load_si256((__m256i*)wt);
-//             __m256i v_new = _mm256_add_epi64(v_du, v_wt);
-
-//             alignas(32) long new_dist[4];
-//             _mm256_store_si256((__m256i*)new_dist, v_new);
-
-//             Relaksacija - sigurna jer nema konflikata
-//             for (int k = 0; k < 4; k++) {
-//                 if (du[k] < INF && new_dist[k] < dist[dst[e+k]]) {
-//                     dist[dst[e+k]] = new_dist[k];
-//                     relaxed = true;
-//                 }
-//             }
-//         }
-
-//         Scalar fallback za preostale grane
-//         for (; e < E; e++)
-//         {
-//             if (dist[src[e]] < INF) {
-//                 long new_dist = dist[src[e]] + w[e];
-//                 if (new_dist < dist[dst[e]]) {
-//                     dist[dst[e]] = new_dist;
-//                     relaxed = true;
-//                 }
-//             }
-//         }
-
-//         if (!relaxed) break;
-//     }
-
-//     return dist;
-// }
-
-// ============================================================
-//      AVX-512 VERZIJA - SA ZAŠTITOM OD RACE CONDITION-A
-// ============================================================
-// std::vector<long> runBellmanFordSSSP_AVX512(
-//     int N, int E, int source_node_id,
-//     const std::vector<int>& src,
-//     const std::vector<int>& dst,
-//     const std::vector<int>& w)
-// {
-//     const long INF = std::numeric_limits<long>::max() / 2;
-//     std::vector<long> dist(N, INF);
-//     dist[source_node_id] = 0;
-
-//     for (int iter = 0; iter < N - 1; iter++)
-//     {
-//         bool relaxed = false;
-//         int e = 0;
-
-//         for (; e + 7 < E; e += 8)
-//         {
-//             Provjera konflikata za 8 grana
-//             bool conflict = false;
-//             for (int i = 0; i < 8 && !conflict; i++) {
-//                 for (int j = i + 1; j < 8; j++) {
-//                     if (dst[e+i] == dst[e+j]) {
-//                         conflict = true;
-//                         break;
-//                     }
-//                 }
-//             }
-            
-//             if (conflict) {
-//                 Scalar path
-//                 for (int k = 0; k < 8; k++) {
-//                     if (dist[src[e+k]] < INF) {
-//                         long new_dist = dist[src[e+k]] + w[e+k];
-//                         if (new_dist < dist[dst[e+k]]) {
-//                             dist[dst[e+k]] = new_dist;
-//                             relaxed = true;
-//                         }
-//                     }
-//                 }
-//                 continue;
-//             }
-
-//             SIMD path
-//             alignas(64) long du[8] = { 
-//                 dist[src[e+0]], dist[src[e+1]],
-//                 dist[src[e+2]], dist[src[e+3]],
-//                 dist[src[e+4]], dist[src[e+5]],
-//                 dist[src[e+6]], dist[src[e+7]]
-//             };
-            
-//             alignas(64) long wt[8] = { 
-//                 (long)w[e+0], (long)w[e+1],
-//                 (long)w[e+2], (long)w[e+3],
-//                 (long)w[e+4], (long)w[e+5],
-//                 (long)w[e+6], (long)w[e+7]
-//             };
-
-//             __m512i v_du = _mm512_load_epi64(du);
-//             __m512i v_wt = _mm512_load_epi64(wt);
-//             __m512i v_new = _mm512_add_epi64(v_du, v_wt);
-
-//             alignas(64) long new_dist[8];
-//             _mm512_store_epi64(new_dist, v_new);
-
-//             for (int k = 0; k < 8; k++) {
-//                 if (du[k] < INF && new_dist[k] < dist[dst[e+k]]) {
-//                     dist[dst[e+k]] = new_dist[k];
-//                     relaxed = true;
-//                 }
-//             }
-//         }
-
-//         Scalar fallback
-//         for (; e < E; e++)
-//         {
-//             if (dist[src[e]] < INF) {
-//                 long new_dist = dist[src[e]] + w[e];
-//                 if (new_dist < dist[dst[e]]) {
-//                     dist[dst[e]] = new_dist;
-//                     relaxed = true;
-//                 }
-//             }
-//         }
-
-//         if (!relaxed) break;
-//     }
-
-//     return dist;
-// }
-
-// ============================================================
-//      ALTERNATIVA: VERZIJA SA ATOMICIMA (Thread-safe)
-// ============================================================
-// std::vector<long> runBellmanFordSSSP_AVX2_Atomic(
-//     int N, int E, int source_node_id,
-//     const std::vector<int>& src,
-//     const std::vector<int>& dst,
-//     const std::vector<int>& w)
-// {
-//     const long INF = std::numeric_limits<long>::max() / 2;
-//     std::vector<std::atomic<long>> dist_atomic(N);
+    // Kreiramo SoA strukturu SORTIRANU po source čvoru
+    struct EdgeSoA {
+        std::vector<int> sources;
+        std::vector<int> destinations;
+        std::vector<int> weights;
+    };
     
-//     for (int i = 0; i < N; i++) {
-//         dist_atomic[i].store(INF, std::memory_order_relaxed);
-//     }
-//     dist_atomic[source_node_id].store(0, std::memory_order_relaxed);
+    EdgeSoA sorted;
+    sorted.sources.reserve(E);
+    sorted.destinations.reserve(E);
+    sorted.weights.reserve(E);
+    
+    // Kreiramo vektor (index, source) za sortiranje
+    std::vector<std::pair<int, int>> idx_src(E);
+    for (int i = 0; i < E; i++) {
+        idx_src[i] = {i, src[i]};
+    }
+    
+    // Sortiramo po source
+    std::sort(idx_src.begin(), idx_src.end(), 
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+    
+    // Popuni sortirane vektore DIREKTNO (bez indirektnog pristupa)
+    for (int i = 0; i < E; i++) {
+        int idx = idx_src[i].first;
+        sorted.sources.push_back(src[idx]);
+        sorted.destinations.push_back(dst[idx]);
+        sorted.weights.push_back(w[idx]);
+    }
 
-//     for (int iter = 0; iter < N - 1; iter++)
-//     {
-//         bool relaxed = false;
-//         int e = 0;
+    const int BLOCK_SIZE = 64;
 
-//         for (; e + 3 < E; e += 4)
-//         {
-//             alignas(32) long du[4] = { 
-//                 dist_atomic[src[e+0]].load(std::memory_order_relaxed),
-//                 dist_atomic[src[e+1]].load(std::memory_order_relaxed),
-//                 dist_atomic[src[e+2]].load(std::memory_order_relaxed),
-//                 dist_atomic[src[e+3]].load(std::memory_order_relaxed)
-//             };
-            
-//             alignas(32) long wt[4] = { 
-//                 (long)w[e+0], (long)w[e+1],
-//                 (long)w[e+2], (long)w[e+3]
-//             };
+    for (int iter = 0; iter < N - 1; iter++)
+    {
+        bool relaxed = false;
 
-//             __m256i v_du = _mm256_load_si256((__m256i*)du);
-//             __m256i v_wt = _mm256_load_si256((__m256i*)wt);
-//             __m256i v_new = _mm256_add_epi64(v_du, v_wt);
+        for (int block_start = 0; block_start < E; block_start += BLOCK_SIZE)
+        {
+            int block_end = std::min(block_start + BLOCK_SIZE, E);
 
-//             alignas(32) long new_dist[4];
-//             _mm256_store_si256((__m256i*)new_dist, v_new);
+            // Prefetch sljedećeg bloka
+            if (block_start + BLOCK_SIZE < E) {
+                __builtin_prefetch(&sorted.sources[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&sorted.destinations[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&sorted.weights[block_start + BLOCK_SIZE], 0, 3);
+            }
 
-//             Atomic compare-and-swap relaksacija
-//             for (int k = 0; k < 4; k++) {
-//                 if (du[k] < INF) {
-//                     int v = dst[e+k];
-//                     long old_dist = dist_atomic[v].load(std::memory_order_relaxed);
-//                     while (new_dist[k] < old_dist) {
-//                         if (dist_atomic[v].compare_exchange_weak(old_dist, new_dist[k],
-//                                                                  std::memory_order_relaxed)) {
-//                             relaxed = true;
-//                             break;
-//                         }
-//                     }
-//                 }
-//             }
-//         }
+            int j = block_start;
 
-//         for (; e < E; e++)
-//         {
-//             long du = dist_atomic[src[e]].load(std::memory_order_relaxed);
-//             if (du < INF) {
-//                 long new_dist = du + w[e];
-//                 int v = dst[e];
-//                 long old_dist = dist_atomic[v].load(std::memory_order_relaxed);
-//                 while (new_dist < old_dist) {
-//                     if (dist_atomic[v].compare_exchange_weak(old_dist, new_dist,
-//                                                              std::memory_order_relaxed)) {
-//                         relaxed = true;
-//                         break;
-//                     }
-//                 }
-//             }
-//         }
+            // --- SIMD: 4 grane odjednom ---
+            for (; j + 3 < block_end; j += 4)
+            {
+                // DIREKTAN pristup - BEZ indirektnog indeksiranja!
+                alignas(32) long du[4] = { 
+                    dist[sorted.sources[j+0]], 
+                    dist[sorted.sources[j+1]],
+                    dist[sorted.sources[j+2]], 
+                    dist[sorted.sources[j+3]]
+                };
 
-//         if (!relaxed) break;
-//     }
+                alignas(32) long wt[4] = { 
+                    (long)sorted.weights[j+0], 
+                    (long)sorted.weights[j+1],
+                    (long)sorted.weights[j+2], 
+                    (long)sorted.weights[j+3]
+                };
 
-//     Konvertuj atomic nazad u obični vektor
-//     std::vector<long> dist(N);
-//     for (int i = 0; i < N; i++) {
-//         dist[i] = dist_atomic[i].load(std::memory_order_relaxed);
-//     }
-//     return dist;
-// }
+                __m256i v_du = _mm256_load_si256((__m256i*)du);
+                __m256i v_wt = _mm256_load_si256((__m256i*)wt);
+                __m256i v_new = _mm256_add_epi64(v_du, v_wt);
+
+                alignas(32) long new_dist[4];
+                _mm256_store_si256((__m256i*)new_dist, v_new);
+
+                // Update
+                for (int k = 0; k < 4; k++)
+                {
+                    if (du[k] < INF)
+                    {
+                        int v = sorted.destinations[j+k];
+                        if (new_dist[k] < dist[v])
+                        {
+                            dist[v] = new_dist[k];
+                            relaxed = true;
+                        }
+                    }
+                }
+            }
+
+            // --- Scalar ostatak ---
+            for (; j < block_end; j++)
+            {
+                int u = sorted.sources[j];
+                int v = sorted.destinations[j];
+                long wt = sorted.weights[j];
+
+                if (dist[u] < INF) {
+                    long new_dist = dist[u] + wt;
+                    if (new_dist < dist[v]) {
+                        dist[v] = new_dist;
+                        relaxed = true;
+                    }
+                }
+            }
+        }
+
+        if (!relaxed) break;
+    }
+
+    return dist;
+}
+
+// ============================================================
+//      AVX-512 VERZIJA - DIREKTNA SoA (BEZ INDEKSIRANJA!)
+// ============================================================
+std::vector<long> runBellmanFordSSSP_AVX512_SoA(const GraphSoA* graph, int source_node_id)
+{
+    int N = graph->num_nodes;
+    int E = graph->num_edges;
+
+    const long INF = std::numeric_limits<long>::max() / 2;
+    std::vector<long> dist(N, INF);
+    dist[source_node_id] = 0;
+
+    const std::vector<int>& src = graph->sources;
+    const std::vector<int>& dst = graph->destinations;
+    const std::vector<int>& w = graph->weights;
+
+    // Kreiramo sortirane vektore
+    struct EdgeSoA {
+        std::vector<int> sources;
+        std::vector<int> destinations;
+        std::vector<int> weights;
+    };
+    
+    EdgeSoA sorted;
+    sorted.sources.reserve(E);
+    sorted.destinations.reserve(E);
+    sorted.weights.reserve(E);
+    
+    std::vector<std::pair<int, int>> idx_src(E);
+    for (int i = 0; i < E; i++) {
+        idx_src[i] = {i, src[i]};
+    }
+    
+    std::sort(idx_src.begin(), idx_src.end(), 
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+    
+    for (int i = 0; i < E; i++) {
+        int idx = idx_src[i].first;
+        sorted.sources.push_back(src[idx]);
+        sorted.destinations.push_back(dst[idx]);
+        sorted.weights.push_back(w[idx]);
+    }
+
+    const int BLOCK_SIZE = 64;
+
+    for (int iter = 0; iter < N - 1; iter++)
+    {
+        bool relaxed = false;
+
+        for (int block_start = 0; block_start < E; block_start += BLOCK_SIZE)
+        {
+            int block_end = std::min(block_start + BLOCK_SIZE, E);
+
+            if (block_start + BLOCK_SIZE < E) {
+                __builtin_prefetch(&sorted.sources[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&sorted.destinations[block_start + BLOCK_SIZE], 0, 3);
+                __builtin_prefetch(&sorted.weights[block_start + BLOCK_SIZE], 0, 3);
+            }
+
+            int j = block_start;
+
+            // --- SIMD: 8 grana odjednom ---
+            for (; j + 7 < block_end; j += 8)
+            {
+                alignas(64) long du[8];
+                alignas(64) long wt[8];
+
+                for (int k = 0; k < 8; k++) {
+                    du[k] = dist[sorted.sources[j+k]];
+                    wt[k] = sorted.weights[j+k];
+                }
+
+                __m512i v_du = _mm512_load_epi64(du);
+                __m512i v_wt = _mm512_load_epi64(wt);
+                __m512i v_new = _mm512_add_epi64(v_du, v_wt);
+
+                alignas(64) long new_dist[8];
+                _mm512_store_epi64(new_dist, v_new);
+
+                for (int k = 0; k < 8; k++)
+                {
+                    if (du[k] < INF)
+                    {
+                        int v = sorted.destinations[j+k];
+                        if (new_dist[k] < dist[v])
+                        {
+                            dist[v] = new_dist[k];
+                            relaxed = true;
+                        }
+                    }
+                }
+            }
+
+            // --- Scalar ostatak ---
+            for (; j < block_end; j++)
+            {
+                int u = sorted.sources[j];
+                int v = sorted.destinations[j];
+                long wt = sorted.weights[j];
+
+                if (dist[u] < INF) {
+                    long new_dist = dist[u] + wt;
+                    if (new_dist < dist[v]) {
+                        dist[v] = new_dist;
+                        relaxed = true;
+                    }
+                }
+            }
+        }
+
+        if (!relaxed) break;
+    }
+
+    return dist;
+}

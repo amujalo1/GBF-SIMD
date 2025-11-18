@@ -1,7 +1,8 @@
-#ifndef GRAPH_UTILS_H
+﻿#ifndef GRAPH_UTILS_H
 #define GRAPH_UTILS_H
 
 #include <string>
+#include <vector>
 
 struct Edge {
     int source;
@@ -15,6 +16,15 @@ struct Graph {
     Edge* edge;
 };
 
+// Nova struktura za SoA format
+struct GraphSoA {
+    int num_nodes;
+    int num_edges;
+    std::vector<int> sources;
+    std::vector<int> destinations;
+    std::vector<int> weights;
+};
+
 bool createGraph(const std::string& filename,
                  int numNodes,
                  int numEdges,
@@ -22,5 +32,8 @@ bool createGraph(const std::string& filename,
                  int maxW);
 
 Graph* readGraph(const std::string& filename);
+
+// Nova funkcija za čitanje u SoA format
+GraphSoA* readGraphSoA(const std::string& filename);
 
 #endif // GRAPH_UTILS_H
